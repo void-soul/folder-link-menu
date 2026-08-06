@@ -14,7 +14,10 @@ $regCommand = "$regRoot\\command"
 
 $menuText = "链接到该目录"
 $iconPath = "shell32.dll,237"
-$command  = "powershell.exe -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$psScript`" -FolderA `"%1`""
+# 注意：不能加 -WindowStyle Hidden！
+# Win11 下隐藏窗口作为 GUI 对话框（MessageBox / FolderBrowserDialog）的宿主，
+# 会导致对话框显示异常甚至脚本"一闪而过"。故用正常窗口 + -STA 显式启动 STA 线程。
+$command  = "powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File `"$psScript`" -FolderA `"%1`""
 
 New-Item         -Path $regRoot    -Force | Out-Null
 New-ItemProperty -Path $regRoot    -Name "(Default)"  -Value $menuText  -PropertyType String -Force | Out-Null

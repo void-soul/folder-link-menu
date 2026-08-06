@@ -8,81 +8,114 @@ param(
 )
 
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
 
-# 1. 验证 A 的路径
-if (-not (Test-Path -LiteralPath $FolderA -PathType Container)) {
+# 错误日志路径（避免"一闪而过"无迹可寻）
+$script:logPath = Join-Path $env:TEMP "LinkFolder_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+
+function Write-LinkLog {
+    param([string]$Message)
+    try {
+        "$(Get-Date -Format 'HH:mm:ss.fff')  $Message" | Add-Content -LiteralPath $script:logPath -Encoding UTF8
+    } catch { }
+}
+
+function Show-ErrorBox {
+    param([string]$Title, [string]$Message)
     [System.Windows.Forms.MessageBox]::Show(
-        "路径不存在或不是文件夹：`n$FolderA",
-        "错误",
+        $Message,
+        $Title,
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Error
     ) | Out-Null
-    exit 1
 }
 
-$folderAName = Split-Path $FolderA -Leaf
+try {
+    Write-LinkLog "=== Start, FolderA = $FolderA ==="
 
-# 2. 弹出目录选择对话框，让用户选择容器目录 B
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = "请选择目标容器目录 B`n将在 B 下建立名为「$folderAName」的链接，指向：`n$FolderA"
-$dialog.ShowNewFolderButton = $true
-$dialog.RootFolder = [System.Environment+SpecialFolder]::MyComputer
+    # 1. 验证 A 的路径（去掉可能的多余引号/空白）
+    $FolderA = $FolderA.Trim().Trim('"').Trim("'")
+    Write-LinkLog "Normalized FolderA = $FolderA"
 
-$result = $dialog.ShowDialog()
+    if ([string]::IsNullOrWhiteSpace($FolderA) -or
+        -not (Test-Path -LiteralPath $FolderA -PathType Container)) {
+        Show-ErrorBox -Title "错误" -Message "路径不存在或不是文件夹：`n$FolderA"
+        Write-LinkLog "Invalid FolderA: $FolderA"
+        exit 1
+    }
 
-if ($result -ne [System.Windows.Forms.DialogResult]::OK) {
-    exit 0
-}
+    $folderAName = Split-Path $FolderA -Leaf
+    if ([string]::IsNullOrWhiteSpace($folderAName)) {
+        $folderAName = "linked_folder_$(Get-Date -Format 'HHmmss')"
+    }
+    Write-LinkLog "folderAName = $folderAName"
 
-$FolderB = $dialog.SelectedPath
+    # 2. 弹出目录选择对话框，让用户选择容器目录 B
+    $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
+    $dialog.Description = "请选择目标容器目录 B`n将在 B 下建立名为「$folderAName」的链接，指向：`n$FolderA"
+    $dialog.ShowNewFolderButton = $true
+    # Win11 兼容：使用默认根，不强制 MyComputer，避免部分系统上 RootFolder 枚举异常
+    $result = $dialog.ShowDialog()
+    Write-LinkLog "Dialog result = $result"
 
-# 3. 验证 B 的路径
-if (-not (Test-Path -LiteralPath $FolderB -PathType Container)) {
-    [System.Windows.Forms.MessageBox]::Show(
-        "选择的目录无效：`n$FolderB",
-        "错误",
-        [System.Windows.Forms.MessageBoxButtons]::OK,
-        [System.Windows.Forms.MessageBoxIcon]::Error
-    ) | Out-Null
-    exit 1
-}
-
-# 4. 确定链接完整路径：B\\A名称
-$linkFullPath = Join-Path $FolderB $folderAName
-
-# 如果 B 下已存在同名项，询问是否覆盖
-if (Test-Path -LiteralPath $linkFullPath) {
-    $overwrite = [System.Windows.Forms.MessageBox]::Show(
-        "目标位置已存在同名项，是否覆盖？`n`n$linkFullPath",
-        "确认覆盖",
-        [System.Windows.Forms.MessageBoxButtons]::YesNo,
-        [System.Windows.Forms.MessageBoxIcon]::Warning
-    )
-    if ($overwrite -ne [System.Windows.Forms.DialogResult]::Yes) {
+    if ($result -ne [System.Windows.Forms.DialogResult]::OK) {
+        Write-LinkLog "User cancelled."
         exit 0
     }
-    cmd /c "rd `"$linkFullPath`"" 2>$null
-    Remove-Item -LiteralPath $linkFullPath -Force -ErrorAction SilentlyContinue
+
+    $FolderB = $dialog.SelectedPath
+    Write-LinkLog "Selected FolderB = $FolderB"
+
+    # 3. 验证 B 的路径
+    if (-not (Test-Path -LiteralPath $FolderB -PathType Container)) {
+        Show-ErrorBox -Title "错误" -Message "选择的目录无效：`n$FolderB"
+        Write-LinkLog "Invalid FolderB: $FolderB"
+        exit 1
+    }
+
+    # 4. 确定链接完整路径：B\A名称
+    $linkFullPath = Join-Path $FolderB $folderAName
+    Write-LinkLog "linkFullPath = $linkFullPath"
+
+    # 如果 B 下已存在同名项，询问是否覆盖
+    if (Test-Path -LiteralPath $linkFullPath) {
+        $overwrite = [System.Windows.Forms.MessageBox]::Show(
+            "目标位置已存在同名项，是否覆盖？`n`n$linkFullPath",
+            "确认覆盖",
+            [System.Windows.Forms.MessageBoxButtons]::YesNo,
+            [System.Windows.Forms.MessageBoxIcon]::Warning
+        )
+        if ($overwrite -ne [System.Windows.Forms.DialogResult]::Yes) {
+            Write-LinkLog "User chose not to overwrite."
+            exit 0
+        }
+        cmd /c "rd `"$linkFullPath`"" 2>$null
+        Remove-Item -LiteralPath $linkFullPath -Force -ErrorAction SilentlyContinue
+    }
+
+    # 5. 建立 Junction 链接：mklink /J B\A名 A路径
+    $cmdArgs = "/c mklink /J `"$linkFullPath`" `"$FolderA`""
+    Write-LinkLog "Executing: cmd $cmdArgs"
+    $proc = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs `
+                          -Wait -PassThru -WindowStyle Hidden
+    Write-LinkLog "mklink exit code = $($proc.ExitCode)"
+
+    if ($proc.ExitCode -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show(
+            "链接创建成功！`n`n链接位置：`n$linkFullPath`n`n指向：`n$FolderA",
+            "成功",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Information
+        ) | Out-Null
+        Write-LinkLog "Link created successfully."
+    } else {
+        Show-ErrorBox -Title "失败" -Message "创建链接失败！`n`n可能原因：`n- B 下已有同名真实目录（非链接）`n- 权限不足`n- 路径含特殊字符`n`n详细日志：`n$script:logPath"
+        exit 1
+    }
 }
-
-# 5. 建立 Junction 链接：mklink /J B\\A名 A路径
-$cmdArgs = "/c mklink /J `"$linkFullPath`" `"$FolderA`""
-$proc    = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs `
-                         -Wait -PassThru -WindowStyle Hidden
-
-if ($proc.ExitCode -eq 0) {
-    [System.Windows.Forms.MessageBox]::Show(
-        "链接创建成功！`n`n链接位置：`n$linkFullPath`n`n指向：`n$FolderA",
-        "成功",
-        [System.Windows.Forms.MessageBoxButtons]::OK,
-        [System.Windows.Forms.MessageBoxIcon]::Information
-    ) | Out-Null
-} else {
-    [System.Windows.Forms.MessageBox]::Show(
-        "创建链接失败！`n`n可能原因：`n- B 下已有同名真实目录（非链接）`n- 权限不足`n- 路径含特殊字符",
-        "失败",
-        [System.Windows.Forms.MessageBoxButtons]::OK,
-        [System.Windows.Forms.MessageBoxIcon]::Error
-    ) | Out-Null
+catch {
+    $msg = "发生未处理异常：`n$($_.Exception.Message)`n`n详细信息已写入日志：`n$script:logPath"
+    Show-ErrorBox -Title "错误" -Message $msg
+    Write-LinkLog "EXCEPTION: $($_.Exception.ToString())"
     exit 1
 }
