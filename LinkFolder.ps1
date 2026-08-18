@@ -30,6 +30,42 @@ function Show-ErrorBox {
     ) | Out-Null
 }
 
+# 在真实数据目录维护 link.data，记录「何时、哪个链接指向该目录」
+# DataFile   = link.data 的完整路径（位于真实数据目录内）
+# LinkedFrom = 指向该目录的链接完整路径
+# 规则：同一链接路径再次链接时更新日期；不同链接路径追加新行
+function Update-LinkData {
+    param(
+        [string]$DataFile,
+        [string]$LinkedFrom
+    )
+    try {
+        $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm'
+        $line = "[$timestamp]$LinkedFrom"
+        if (Test-Path -LiteralPath $DataFile -PathType Leaf) {
+            $lines = @(Get-Content -LiteralPath $DataFile -Encoding UTF8)
+            $updated = $false
+            for ($i = 0; $i -lt $lines.Count; $i++) {
+                $m = [regex]::Match($lines[$i], '^\[[^\]]*\]\s*(.*)$')
+                if ($m.Success -and $m.Groups[1].Value.Trim() -eq $LinkedFrom) {
+                    $lines[$i] = $line
+                    $updated = $true
+                    break
+                }
+            }
+            if (-not $updated) {
+                $lines += $line
+            }
+            $lines | Set-Content -LiteralPath $DataFile -Encoding UTF8
+        } else {
+            $line | Set-Content -LiteralPath $DataFile -Encoding UTF8
+        }
+        Write-LinkLog "link.data updated: $DataFile  <-  $line"
+    } catch {
+        Write-LinkLog "link.data update failed: $($_.Exception.Message)"
+    }
+}
+
 try {
     Write-LinkLog "=== Start, FolderA = $FolderA ==="
 
@@ -101,8 +137,12 @@ try {
     Write-LinkLog "mklink exit code = $($proc.ExitCode)"
 
     if ($proc.ExitCode -eq 0) {
+        # 在真实数据目录（FolderA）创建/更新 link.data，记录哪个链接指向了该目录
+        $dataFile = Join-Path $FolderA 'link.data'
+        Update-LinkData -DataFile $dataFile -LinkedFrom $linkFullPath
+
         [System.Windows.Forms.MessageBox]::Show(
-            "链接创建成功！`n`n链接位置：`n$linkFullPath`n`n指向：`n$FolderA",
+            "链接创建成功！`n`n链接位置：`n$linkFullPath`n`n指向：`n$FolderA`n`n已记录：`n$dataFile",
             "成功",
             [System.Windows.Forms.MessageBoxButtons]::OK,
             [System.Windows.Forms.MessageBoxIcon]::Information
