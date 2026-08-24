@@ -1,10 +1,10 @@
 ﻿# MigrateLinkFolder.ps1
 # 用法：被右键菜单调用，参数为右键选中的文件夹路径（即 A）
 # 功能：
-#   1. 自动提权（非管理员时弹 UAC，以管理员身份重启，保证跨卷符号链接可创建）
+#   1. 自动提权（非管理员时弹 UAC，以管理员身份重启，应对跨盘回退到符号链接等场景）
 #   2. 用户选择迁移目录 B
 #   3. 把 A 迁移到 B\A名（同卷用 Move-Item 瞬间完成；跨卷用 robocopy /MOVE）
-#   4. 在原位置 A 创建指向新位置的目录符号链接（mklink /D，支持跨卷）
+#   4. 在原位置 A 创建链接：优先 Junction（mklink /J，免管理员）；跨盘时 Junction 失败则回退 Symlink（mklink /D）
 #   5. 任一步失败自动把数据回滚到原位置
 #
 # 安全防护：
@@ -342,12 +342,26 @@ try {
         exit 1
     }
 
-    # ---------- 6. 在原位置创建符号链接 ----------
-    Write-MigLog "Creating symlink: $FolderA -> $targetPath"
-    $cmdArgs = "/c mklink /D `"$FolderA`" `"$targetPath`""
+    # ---------- 6. 在原位置创建链接 ----------
+    # 优先 Junction（mklink /J，免管理员、同盘足够）；跨盘时 Junction 失败则回退 Symlink（mklink /D）
+    $linkMade = $false
+    # 优先 Junction（mklink /J，免管理员）；跨盘时 Junction 会失败，下方回退 Symlink
+    Write-MigLog "Creating link (try Junction first): $FolderA -> $targetPath"
+    $cmdArgs = "/c mklink /J `"$FolderA`" `"$targetPath`""
     $proc = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs `
                           -Wait -PassThru -WindowStyle Hidden
-    Write-MigLog "mklink exit code = $($proc.ExitCode)"
+    Write-MigLog "mklink /J exit code = $($proc.ExitCode)"
+
+    if ($proc.ExitCode -ne 0) {
+        # Junction 失败（常见于跨盘），回退 Symlink（需要管理员）
+        Write-MigLog "Junction failed, fallback to Symlink (mklink /D): $FolderA -> $targetPath"
+        $cmdArgs = "/c mklink /D `"$FolderA`" `"$targetPath`""
+        $proc = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs `
+                              -Wait -PassThru -WindowStyle Hidden
+        Write-MigLog "mklink /D exit code = $($proc.ExitCode)"
+    } else {
+        $linkMade = $true
+    }
 
     if ($proc.ExitCode -ne 0) {
         # 链接创建失败：回滚数据到原位置（并校验回滚结果）
