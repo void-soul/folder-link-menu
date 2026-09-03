@@ -274,16 +274,52 @@ try {
         }
     }
 
-    $confirm = [System.Windows.Forms.MessageBox]::Show(
-        "即将执行：`n`n  原位置  : $FolderA`n  迁移到  : $targetPath`n  链接    : $FolderA → $targetPath`n`n$lockWarn`n继续吗？",
-        "确认迁移",
-        [System.Windows.Forms.MessageBoxButtons]::YesNo,
-        [System.Windows.Forms.MessageBoxIcon]::Question
-    )
+    # ---------- 4.5 最终确认（含「强制使用 Symlink」选项） ----------
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "确认迁移"
+    $form.Size = New-Object System.Drawing.Size(540, 340)
+    $form.StartPosition = "CenterScreen"
+    $form.FormBorderStyle = "FixedDialog"
+    $form.MaximizeBox = $false
+    $form.MinimizeBox = $false
+
+    $label = New-Object System.Windows.Forms.Label
+    $label.Location = New-Object System.Drawing.Point(12, 12)
+    $label.Size = New-Object System.Drawing.Size(504, 175)
+    $label.AutoSize = $false
+    $label.Text = ("即将执行：`n`n  原位置  : $FolderA`n  迁移到  : $targetPath`n  链接    : $FolderA -> $targetPath`n`n$lockWarn").TrimEnd("`n")
+    $form.Controls.Add($label)
+
+    $chk = New-Object System.Windows.Forms.CheckBox
+    $chk.Location = New-Object System.Drawing.Point(12, 195)
+    $chk.Size = New-Object System.Drawing.Size(504, 44)
+    $chk.Text = "强制使用 Symlink（兼容跨平台工具，如 dsh；否则默认使用 Junction）"
+    $chk.Checked = $false
+    $form.Controls.Add($chk)
+
+    $btnYes = New-Object System.Windows.Forms.Button
+    $btnYes.Location = New-Object System.Drawing.Point(268, 255)
+    $btnYes.Size = New-Object System.Drawing.Size(120, 32)
+    $btnYes.Text = "是(&Y)"
+    $btnYes.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+    $form.Controls.Add($btnYes)
+    $form.AcceptButton = $btnYes
+
+    $btnNo = New-Object System.Windows.Forms.Button
+    $btnNo.Location = New-Object System.Drawing.Point(396, 255)
+    $btnNo.Size = New-Object System.Drawing.Size(120, 32)
+    $btnNo.Text = "否(&N)"
+    $btnNo.DialogResult = [System.Windows.Forms.DialogResult]::No
+    $form.Controls.Add($btnNo)
+    $form.CancelButton = $btnNo
+
+    $confirm = $form.ShowDialog()
+    $forceSymlink = $chk.Checked
     if ($confirm -ne [System.Windows.Forms.DialogResult]::Yes) {
         Write-MigLog "User cancelled at final confirm."
         exit 0
     }
+    Write-MigLog "User confirmed. forceSymlink = $forceSymlink"
 
     # ---------- 5. 执行迁移 ----------
     $srcRoot = [System.IO.Path]::GetPathRoot($FolderA).TrimEnd('\').ToUpperInvariant()
@@ -343,24 +379,26 @@ try {
     }
 
     # ---------- 6. 在原位置创建链接 ----------
-    # 优先 Junction（mklink /J，免管理员、同盘足够）；跨盘时 Junction 失败则回退 Symlink（mklink /D）
-    $linkMade = $false
-    # 优先 Junction（mklink /J，免管理员）；跨盘时 Junction 会失败，下方回退 Symlink
-    Write-MigLog "Creating link (try Junction first): $FolderA -> $targetPath"
-    $cmdArgs = "/c mklink /J `"$FolderA`" `"$targetPath`""
+    # 默认优先 Junction（mklink /J，免管理员）；勾选「强制 Symlink」或跨盘 Junction 失败时回退 Symlink（mklink /D）
+    if ($forceSymlink) {
+        Write-MigLog "Forced Symlink (mklink /D): $FolderA -> $targetPath"
+        $cmdArgs = "/c mklink /D `"$FolderA`" `"$targetPath`""
+    } else {
+        Write-MigLog "Creating link (try Junction first): $FolderA -> $targetPath"
+        $cmdArgs = "/c mklink /J `"$FolderA`" `"$targetPath`""
+    }
     $proc = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs `
                           -Wait -PassThru -WindowStyle Hidden
-    Write-MigLog "mklink /J exit code = $($proc.ExitCode)"
+    $tag = if ($forceSymlink) { "mklink /D" } else { "mklink /J" }
+    Write-MigLog "$tag exit code = $($proc.ExitCode)"
 
-    if ($proc.ExitCode -ne 0) {
+    if (($proc.ExitCode -ne 0) -and (-not $forceSymlink)) {
         # Junction 失败（常见于跨盘），回退 Symlink（需要管理员）
         Write-MigLog "Junction failed, fallback to Symlink (mklink /D): $FolderA -> $targetPath"
         $cmdArgs = "/c mklink /D `"$FolderA`" `"$targetPath`""
         $proc = Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs `
                               -Wait -PassThru -WindowStyle Hidden
         Write-MigLog "mklink /D exit code = $($proc.ExitCode)"
-    } else {
-        $linkMade = $true
     }
 
     if ($proc.ExitCode -ne 0) {
