@@ -1,15 +1,21 @@
 ﻿# Uninstall-LinkFolderMenu.ps1
-# 功能：从注册表移除「链接到该目录」和「迁移并链接」右键菜单
+# 从注册表移除 4 个右键菜单及历史遗留键（含级联菜单版 MagicMenu）
 
-$regRoot          = "HKCU:\\SOFTWARE\\Classes\\Directory\\shell\\FolderLinkTool"
-$regMigrateRoot   = "HKCU:\\SOFTWARE\\Classes\\Directory\\shell\\FolderLinkMigrateTool"
+$keys = @(
+    "HKCU:\SOFTWARE\Classes\Directory\shell\MagicLink",
+    "HKCU:\SOFTWARE\Classes\Directory\shell\MagicMigrate",
+    "HKCU:\SOFTWARE\Classes\Directory\shell\MagicMark",
+    "HKCU:\SOFTWARE\Classes\Directory\shell\MagicIdentify",
+    "HKCU:\SOFTWARE\Classes\Directory\shell\MagicMenu",
+    "HKCU:\SOFTWARE\Classes\Directory\shell\FolderLinkTool",
+    "HKCU:\SOFTWARE\Classes\Directory\shell\FolderLinkMigrateTool"
+)
 
 $removedAny = $false
-
-foreach ($key in @($regRoot, $regMigrateRoot)) {
+foreach ($key in $keys) {
     if (Test-Path $key) {
         Remove-Item -Path $key -Recurse -Force
-        Write-Host "  [OK] 已移除菜单：$key" -ForegroundColor Yellow
+        Write-Host "  [OK] 已移除：$key" -ForegroundColor Yellow
         $removedAny = $true
     }
 }

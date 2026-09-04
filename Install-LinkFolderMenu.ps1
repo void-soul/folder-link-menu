@@ -1,63 +1,78 @@
 ﻿# Install-LinkFolderMenu.ps1
-# 功能：将「链接到该目录」和「迁移并链接」右键菜单注册到 Windows 注册表（写 HKCU，无需管理员）
+# 在文件夹右键菜单注册 4 个一级菜单（HKCU，无需管理员）：
+#   链接到该目录 / 迁移并链接 / 标记 / 识别
+# 说明：曾尝试「Magic Menu」级联子菜单（SubCommands + shell\<动词>\command），
+#       在部分系统上 Explorer 不渲染子菜单，故改回 4 个并列一级菜单
+#       （与旧版同构，该结构已验证可正常显示）。
 
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$psScript        = Join-Path $scriptDir "LinkFolder.ps1"
-$psMigrateScript = Join-Path $scriptDir "MigrateLinkFolder.ps1"
 
-if (-not (Test-Path $psScript)) {
-    Write-Error "找不到 LinkFolder.ps1，请确保它和本脚本在同一目录下：`n$psScript"
+# 检查必需脚本
+$missing = @()
+foreach ($n in @("LinkFolder.ps1", "MigrateLinkFolder.ps1", "MarkFolder.ps1", "IdentifyFolder.ps1")) {
+    if (-not (Test-Path -LiteralPath (Join-Path $scriptDir $n))) { $missing += $n }
+}
+if ($missing.Count -gt 0) {
+    Write-Error "缺少脚本文件，请确认它们与安装脚本在同一目录：`n$($missing -join "`n")`n目录：$scriptDir"
     exit 1
 }
 
-# ============ 菜单 1：链接到该目录 ============
-$regRoot    = "HKCU:\\SOFTWARE\\Classes\\Directory\\shell\\FolderLinkTool"
-$regCommand = "$regRoot\\command"
+# ---------- 清理旧版（含级联菜单版 MagicMenu） ----------
+$cleanupKeys = @(
+    "HKCU:\SOFTWARE\Classes\Directory\shell\FolderLinkTool",
+    "HKCU:\SOFTWARE\Classes\Directory\shell\FolderLinkMigrateTool",
+    "HKCU:\SOFTWARE\Classes\Directory\shell\MagicMenu"
+)
+foreach ($k in $cleanupKeys) {
+    if (Test-Path $k) {
+        Remove-Item -Path $k -Recurse -Force
+        Write-Host "  [清理] $k" -ForegroundColor Gray
+    }
+}
 
-$menuText = "链接到该目录"
-$iconPath = "shell32.dll,237"
-# 注意：不能加 -WindowStyle Hidden！
-# Win11 下隐藏窗口作为 GUI 对话框（MessageBox / FolderBrowserDialog）的宿主，
-# 会导致对话框显示异常甚至脚本"一闪而过"。故用正常窗口 + -STA 显式启动 STA 线程。
-$command  = "powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File `"$psScript`" -FolderA `"%1`""
+# ---------- 注册 4 个一级菜单 ----------
+$menus = @(
+    @{ Key = "MagicLink";     Text = "链接到该目录"; Icon = "shell32.dll,237"; Script = "LinkFolder.ps1" },
+    @{ Key = "MagicMigrate";  Text = "迁移并链接";   Icon = "shell32.dll,174"; Script = "MigrateLinkFolder.ps1" },
+    @{ Key = "MagicMark";     Text = "标记";         Icon = "shell32.dll,43";  Script = "MarkFolder.ps1" },
+    @{ Key = "MagicIdentify"; Text = "识别";         Icon = "shell32.dll,167"; Script = "IdentifyFolder.ps1" }
+)
 
-New-Item         -Path $regRoot    -Force | Out-Null
-New-ItemProperty -Path $regRoot    -Name "(Default)"  -Value $menuText  -PropertyType String -Force | Out-Null
-New-ItemProperty -Path $regRoot    -Name "Icon"       -Value $iconPath  -PropertyType String -Force | Out-Null
+foreach ($m in $menus) {
+    $root = "HKCU:\SOFTWARE\Classes\Directory\shell\$($m.Key)"
+    if (Test-Path $root) { Remove-Item -Path $root -Recurse -Force }
+    New-Item         -Path $root -Force | Out-Null
+    New-ItemProperty -Path $root -Name "(Default)" -Value $m.Text -PropertyType String -Force | Out-Null
+    New-ItemProperty -Path $root -Name "Icon"      -Value $m.Icon -PropertyType String -Force | Out-Null
 
-New-Item         -Path $regCommand -Force | Out-Null
-New-ItemProperty -Path $regCommand -Name "(Default)"  -Value $command   -PropertyType String -Force | Out-Null
+    $cmdRoot    = "$root\command"
+    $scriptPath = Join-Path $scriptDir $m.Script
+    $cmd        = "powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File `"$scriptPath`" -FolderA `"%1`""
+    New-Item         -Path $cmdRoot -Force | Out-Null
+    New-ItemProperty -Path $cmdRoot -Name "(Default)" -Value $cmd -PropertyType String -Force | Out-Null
+}
 
-# ============ 菜单 2：迁移并链接 ============
-if (Test-Path $psMigrateScript) {
-    $regMigrateRoot    = "HKCU:\\SOFTWARE\\Classes\\Directory\\shell\\FolderLinkMigrateTool"
-    $regMigrateCommand = "$regMigrateRoot\\command"
+# ---------- 验证 ----------
+$ok = $true
+foreach ($m in $menus) {
+    $root = "HKCU:\SOFTWARE\Classes\Directory\shell\$($m.Key)"
+    if (-not (Test-Path "$root\command")) { $ok = $false; Write-Warning "缺少注册项：$root\command" }
+}
 
-    $migrateMenuText = "迁移并链接"
-    $migrateIconPath = "shell32.dll,174"
-    $migrateCommand  = "powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File `"$psMigrateScript`" -FolderA `"%1`""
-
-    New-Item         -Path $regMigrateRoot    -Force | Out-Null
-    New-ItemProperty -Path $regMigrateRoot    -Name "(Default)"  -Value $migrateMenuText  -PropertyType String -Force | Out-Null
-    New-ItemProperty -Path $regMigrateRoot    -Name "Icon"       -Value $migrateIconPath  -PropertyType String -Force | Out-Null
-
-    New-Item         -Path $regMigrateCommand -Force | Out-Null
-    New-ItemProperty -Path $regMigrateCommand -Name "(Default)"  -Value $migrateCommand   -PropertyType String -Force | Out-Null
-
-    $migrateMsg = "`n  菜单文字 : $migrateMenuText（迁移数据到目标盘，并在原位置创建链接，自动提权）"
+Write-Host ""
+if ($ok) {
+    Write-Host "  [OK] 右键菜单注册成功！" -ForegroundColor Green
 } else {
-    Write-Warning "未找到 MigrateLinkFolder.ps1，「迁移并链接」菜单未注册：`n$psMigrateScript"
-    $migrateMsg = ""
+    Write-Host "  [失败] 部分注册项缺失，请检查上方警告。" -ForegroundColor Red
+    exit 1
 }
-
 Write-Host ""
-Write-Host "  [OK] 右键菜单注册成功！" -ForegroundColor Green
+Write-Host "  右键任意文件夹即可看到 4 个菜单项："
+Write-Host "    · 链接到该目录   创建 Junction 或 Symlink 指向原目录"
+Write-Host "    · 迁移并链接     移动数据到新位置并在原位置创建链接"
+Write-Host "    · 标记           给文件夹写备注（存于脚本根目录 mark.data）"
+Write-Host "    · 识别           查看链接状态与指向（含反向查找）"
 Write-Host ""
-Write-Host "  菜单文字 : $menuText（在目标目录下创建指向原目录的链接）"
-Write-Host "$migrateMsg"
-Write-Host "  作用范围 : 仅文件夹（右键文件夹时显示）"
-Write-Host "  脚本路径 : $psScript"
-if (Test-Path $psMigrateScript) {
-    Write-Host "            $psMigrateScript"
-}
+Write-Host "  作用范围   : 仅文件夹（Win11 需点「显示更多选项」或 Shift+F10）"
+Write-Host "  脚本根目录 : $scriptDir"
 Write-Host ""
